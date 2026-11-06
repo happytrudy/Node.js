@@ -35,3 +35,13 @@
 > **连接数建议**
 1.  http2协议，并发连接数建议4以下。
 2.  quic协议，建议将并发连接数设为 `1`（`ARGO_CONNECTIONS=1`），多条quic可能会引发机房QoS。
+
+### 3. TUIC 证书配置
+
+TUIC 不再使用自签证书，启动前设置：
+
+* `CERT_DOMAIN`：用于 TUIC TLS 的真实域名，必须已托管在 Cloudflare。
+* `CF_API_TOKEN`：Cloudflare API Token，至少需要对应 Zone 的 DNS 编辑权限及 Zone 读取权限。
+* `ACME_EMAIL`：ACME 账户邮箱，可选。
+
+证书由 sing-box `certProvider` 通过 Cloudflare DNS-01 自动申请和续期。

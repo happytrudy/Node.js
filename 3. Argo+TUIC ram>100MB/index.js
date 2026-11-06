@@ -16,6 +16,12 @@ const ARGO_DOMAIN = process.env.ARGO_DOMAIN || "";                              
 
 const ARGO_AUTH = process.env.ARGO_AUTH || "";                                  // 固定隧道 Token
 
+const CERT_DOMAIN = (process.env.CERT_DOMAIN || "").trim();                           // ACME 证书域名（必须托管在 Cloudflare）
+
+const CF_API_TOKEN = (process.env.CF_API_TOKEN || process.env.CF_DNS_API_TOKEN || "").trim(); // Cloudflare DNS 编辑 API Token
+
+const ACME_EMAIL = (process.env.ACME_EMAIL || "").trim();                              // ACME 账户邮箱（可选）
+
 const CFIP = process.env.CFIP || "www.visa.co.jp";                              // 优选域名（ www.wto.org  usa.visa.com  www.visa.com.hk  www.shopify.com ) 
 
 
@@ -89,6 +95,10 @@ const SINGBOX_MEM_LIMIT = singboxMemLimit;
 const CLOUDFLARED_MEM_LIMIT = cloudflaredMemLimit;
 
 if (!fs.existsSync(FILE_PATH)) fs.mkdirSync(FILE_PATH, { recursive: true });
+try {
+  fs.rmSync(path.join(FILE_PATH, "cert.pem"), { force: true });
+  fs.rmSync(path.join(FILE_PATH, "private.key"), { force: true });
+} catch (e) {}
 
 const uuidFilePath = path.join(FILE_PATH, "uuid.txt");
 const tuicPwdFilePath = path.join(FILE_PATH, "tuic_password.txt");
@@ -149,22 +159,13 @@ function getPublicIP() {
     .catch(() => "127.0.0.1");
 }
 
-function generateCertificates(keyPath, certPath) {
-  if (fs.existsSync(keyPath) && fs.existsSync(certPath)) return;
-  try {
-    execSync(`openssl ecparam -genkey -name prime256v1 -out "${keyPath}" 2>/dev/null && openssl req -new -x509 -days 3650 -key "${keyPath}" -out "${certPath}" -subj "/CN=bing.com" 2>/dev/null`);
-    fs.chmodSync(keyPath, 0o600);
-  } catch (e) {}
-}
-
 const webPath = path.join(FILE_PATH, "web");
 const botPath = path.join(FILE_PATH, "bot");
 const configPath = path.join(FILE_PATH, "config.json");
-const certPath = path.join(FILE_PATH, "cert.pem");
-const keyPath = path.join(FILE_PATH, "private.key");
 
 const isArm = ["arm", "arm64", "aarch64"].includes(os.arch());
-const SINGBOX_VER = "1.11.4";
+const SINGBOX_VER = "1.14.4";
+const singboxVersionPath = path.join(FILE_PATH, "singbox.version");
 const singboxTarUrl = `https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/sing-box-${SINGBOX_VER}-linux-${isArm ? "arm64" : "amd64"}.tar.gz`;
 const cloudflaredUrl = `https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${isArm ? "arm64" : "amd64"}`;
 
@@ -175,6 +176,9 @@ let isExiting = false;
 async function startSingbox() {
   if (isExiting) return;
   try {
+    if (!fs.existsSync(singboxVersionPath) || fs.readFileSync(singboxVersionPath, "utf8").trim() !== SINGBOX_VER) {
+      fs.rmSync(webPath, { force: true });
+    }
     if (!fs.existsSync(webPath)) {
       log("正在下载 sing-box...");
       const tempTar = path.join(FILE_PATH, "singbox.tar.gz");
@@ -185,6 +189,7 @@ async function startSingbox() {
       try { fs.unlinkSync(tempTar); } catch (e) {}
     }
     fs.chmodSync(webPath, 0o775);
+    fs.writeFileSync(singboxVersionPath, SINGBOX_VER, { mode: 0o600 });
 
     webProc = spawn(webPath, ["run", "-c", configPath], {
       env: Object.assign({}, GO_BASE_ENV, { GOMEMLIMIT: SINGBOX_MEM_LIMIT }),
@@ -305,16 +310,33 @@ async function main() {
     });
   }
   if (enableTuic) {
-    generateCertificates(keyPath, certPath);
+    if (!CERT_DOMAIN || !CF_API_TOKEN) {
+      throw new Error("TUIC 需要配置 CERT_DOMAIN 和 CF_API_TOKEN（Cloudflare DNS API Token）");
+    }
+    const certificateDataPath = path.resolve(FILE_PATH, "certificates");
+    fs.mkdirSync(certificateDataPath, { recursive: true });
     inbounds.push({
       type: "tuic", tag: "tuic-in", listen: "::", listen_port: parseInt(TUIC_PORT),
       users: [{ uuid: UUID, password: TUIC_PASSWORD }], congestion_control: "bbr",
-      tls: { enabled: true, alpn: ["h3"], certificate_path: certPath, key_path: keyPath }
+      tls: { enabled: true, alpn: ["h3"], certificate_provider: "acme" }
     });
   }
 
-  fs.writeFileSync(configPath, JSON.stringify({
+  const config = {
     log: { level: "panic" },
+    ...(enableTuic ? { certificate_providers: [{
+      type: "acme",
+      tag: "acme",
+      domain: [CERT_DOMAIN],
+      ...(ACME_EMAIL ? { email: ACME_EMAIL } : {}),
+      data_directory: path.resolve(FILE_PATH, "certificates"),
+      disable_http_challenge: true,
+      disable_tls_alpn_challenge: true,
+      dns01_challenge: {
+        provider: "cloudflare",
+        api_token: CF_API_TOKEN
+      }
+    }] } : {}),
     dns: {
       servers: [
         {
@@ -333,7 +355,9 @@ async function main() {
       auto_detect_interface: true,
       final: "direct"
     }
-  }));
+  };
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
+  fs.chmodSync(configPath, 0o600);
 
   await startSingbox();
 
@@ -364,7 +388,7 @@ async function main() {
 
   if (enableTuic) {
     const publicIp = await getPublicIP();
-    tuicNodeLink = `tuic://${UUID}:${TUIC_PASSWORD}@${publicIp}:${TUIC_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#TUIC_Easyshare`;
+    tuicNodeLink = `tuic://${UUID}:${TUIC_PASSWORD}@${publicIp}:${TUIC_PORT}?sni=${encodeURIComponent(CERT_DOMAIN)}&alpn=h3&congestion_control=bbr#TUIC_Easyshare`;
   }
 
   if (enableArgo) {

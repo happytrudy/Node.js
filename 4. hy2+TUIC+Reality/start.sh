@@ -9,6 +9,10 @@ export HY2_PORT=${HY2_PORT:-""}                       # 填入hy2节点端口
 
 export REALITY_PORT=${REALITY_PORT:-""}               # 填入reality节点端口（UDP/TCP可以共用1个端口）
 
+export CERT_DOMAIN=${CERT_DOMAIN:-""}                 # ACME 证书域名（必须托管在 Cloudflare）
+export CF_API_TOKEN=${CF_API_TOKEN:-${CF_DNS_API_TOKEN:-""}} # Cloudflare DNS 编辑 API Token
+export ACME_EMAIL=${ACME_EMAIL:-""}                   # ACME 账户邮箱（可选）
+
 # ==============================================
 
 
@@ -16,6 +20,7 @@ cd "$(dirname "$0")"
 export FILE_PATH="${PWD}/.npm"
 export DATA_PATH="${PWD}/singbox_data"
 mkdir -p "$FILE_PATH" "$DATA_PATH"
+rm -f "${FILE_PATH}/cert.pem" "${FILE_PATH}/private.key"
 export XDG_DATA_HOME="/tmp/.singbox_data"
 export XDG_CACHE_HOME="/tmp/.singbox_cache"
 export TMPDIR="/tmp"
@@ -34,11 +39,7 @@ fi
 
 [ ! -d "${FILE_PATH}" ] && mkdir -p "${FILE_PATH}"
 
-# 自动通过 API 获取最新的 release 版本号（剥离 v 前缀），若 API 受限则以 1.11.4 保底
-SINGBOX_VER=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')
-if [ -z "$SINGBOX_VER" ]; then
-  SINGBOX_VER="1.11.4"
-fi
+SINGBOX_VER="1.14.4"
 
 ARCH=$(uname -m)
 DOWNLOAD_URL=""
@@ -68,6 +69,10 @@ download_file() {
 }
 
 SINGBOX_BIN="${FILE_PATH}/sb_core"
+SINGBOX_VERSION_FILE="${FILE_PATH}/singbox.version"
+if [ ! -f "$SINGBOX_VERSION_FILE" ] || [ "$(cat "$SINGBOX_VERSION_FILE" 2>/dev/null)" != "$SINGBOX_VER" ]; then
+  rm -f "$SINGBOX_BIN"
+fi
 if [ ! -f "$SINGBOX_BIN" ]; then
   echo -e "\e[1;33m[下载] 未检测到 Sing-box 核心，正在下载最新版本 v${SINGBOX_VER}...\e[0m"
   download_file "$DOWNLOAD_URL" "${FILE_PATH}/singbox.tar.gz"
@@ -76,6 +81,8 @@ if [ ! -f "$SINGBOX_BIN" ]; then
   mv "${FILE_PATH}/sing-box" "$SINGBOX_BIN" 2>/dev/null || true
   rm -f "${FILE_PATH}/singbox.tar.gz"
   chmod +x "$SINGBOX_BIN"
+  printf '%s\n' "$SINGBOX_VER" > "$SINGBOX_VERSION_FILE"
+  chmod 600 "$SINGBOX_VERSION_FILE"
 else
   echo -e "\e[1;32m[核心] 已存在 Sing-box 核心，跳过下载\e[0m"
 fi
@@ -97,35 +104,35 @@ if [ "$REALITY_PORT" != "" ] && [ "$REALITY_PORT" != "0" ]; then
   fi
 fi
 
-if [ ! -f "${FILE_PATH}/cert.pem" ] || [ ! -f "${FILE_PATH}/private.key" ]; then
-  if ! command -v openssl >/dev/null 2>&1; then
-    cat > "${FILE_PATH}/private.key" <<'EOF'
------BEGIN EC PARAMETERS-----
-BgqghkjOPQQBw==
------END EC PARAMETERS-----
------BEGIN EC PRIVATE KEY-----
-MHcCAQEEIM4792SEtPqIt1ywqTd/0bYidBqpYV/+siNnfBYsdUYsAoGCCqGSM49
-AwEHoUQDQgAE1kHafPj07rJG+HboH2ekAI4r+e6TL38GWASAnngZreoQDF16ARa
-/TsyLyFoPkhTxSbehH/OBEjHtSZGaDhMqQ==
------END EC PRIVATE KEY-----
-EOF
-    cat > "${FILE_PATH}/cert.pem" <<'EOF'
------BEGIN CERTIFICATE-----
-MIIBejCCASGgAwIBAgIUFWeQL3556PNJLp/veCFxGNj9crkwCgYIKoZIzj0EAwIw
-EzERMA8GA1UEAwwIYmluZy5jb20wHhcNMjUwMTAxMDEwMTAwWhcNMzUwMTAxMDEw
-MTAwWjATMREwDwYDVQQDDAhiaW5nLmNvbTBNBgqgGzM9AgEGCCqGSM49AwEHA0IA
-BNZB2nz49O6yRvh26B9npACOK/nuky9/BlgEgDZ54Ga3qEAxdeWv07Mi8h
-d5IR8Um3oR/zQRIx7UmRmg4TKmjUzBRMB0GA1UdDgQWBQTV1cFID7UISE7PLTBR
-BfGbgrkMNzAfBgNVHSMEGDAWgBTV1cFID7UISE7PLTBRBfGbgrkMNzAPBgNVHRMB
-Af8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIARDAJvg0vd/ytrQVvEcSm6XTlB+
-eQ6OFb9LbLYL9Zi+AiffoMbi4y/0YUQlTtz7as9S8/lciBF5VCUoVIKS+vX2g==
------END CERTIFICATE-----
-EOF
-  else
-    openssl ecparam -genkey -name prime256v1 -out "${FILE_PATH}/private.key" 2>/dev/null
-    openssl req -new -x509 -days 3650 -key "${FILE_PATH}/private.key" -out "${FILE_PATH}/cert.pem" -subj "/CN=bing.com" 2>/dev/null
+if { [ -n "$TUIC_PORT" ] && [ "$TUIC_PORT" != "0" ]; } || { [ -n "$HY2_PORT" ] && [ "$HY2_PORT" != "0" ]; }; then
+  if [ -z "$CERT_DOMAIN" ] || [ -z "$CF_API_TOKEN" ]; then
+    echo "缺少 CERT_DOMAIN 或 CF_API_TOKEN，TUIC/Hysteria2 无法启用 ACME DNS-01 证书" >&2
+    exit 1
   fi
-  chmod 600 "${FILE_PATH}/private.key"
+  mkdir -p "${FILE_PATH}/certificates"
+fi
+
+CERTIFICATE_PROVIDER_JSON=""
+if { [ -n "$TUIC_PORT" ] && [ "$TUIC_PORT" != "0" ]; } || { [ -n "$HY2_PORT" ] && [ "$HY2_PORT" != "0" ]; }; then
+  ACME_EMAIL_JSON=""
+  if [ -n "$ACME_EMAIL" ]; then
+    ACME_EMAIL_JSON=$(printf ',\n    "email": "%s"' "$ACME_EMAIL")
+  fi
+  CERTIFICATE_PROVIDER_JSON=$(cat <<CERT_PROVIDER_EOF
+  "certificate_providers": [{
+    "type": "acme",
+    "tag": "acme",
+    "domain": ["$CERT_DOMAIN"],
+    "data_directory": "${FILE_PATH}/certificates",
+    "disable_http_challenge": true,
+    "disable_tls_alpn_challenge": true,
+    "dns01_challenge": {
+      "provider": "cloudflare",
+      "api_token": "$CF_API_TOKEN"
+    }${ACME_EMAIL_JSON}
+  }],
+CERT_PROVIDER_EOF
+)
 fi
 
 INBOUNDS=()
@@ -137,7 +144,7 @@ if [ -n "$TUIC_PORT" ] && [ "$TUIC_PORT" != "0" ]; then
     \"listen_port\": $TUIC_PORT,
     \"users\": [{\"uuid\": \"$UUID\", \"password\": \"admin\"}],
     \"congestion_control\": \"bbr\",
-    \"tls\": {\"enabled\": true, \"alpn\": [\"h3\"], \"certificate_path\": \"${FILE_PATH}/cert.pem\", \"key_path\": \"${FILE_PATH}/private.key\"}
+    \"tls\": {\"enabled\": true, \"alpn\": [\"h3\"], \"certificate_provider\": \"acme\"}
   }")
 fi
 
@@ -148,7 +155,7 @@ if [ -n "$HY2_PORT" ] && [ "$HY2_PORT" != "0" ]; then
     \"listen_port\": $HY2_PORT,
     \"users\": [{\"password\": \"$UUID\"}],
     \"masquerade\": \"https://bing.com\",
-    \"tls\": {\"enabled\": true, \"alpn\": [\"h3\"], \"certificate_path\": \"${FILE_PATH}/cert.pem\", \"key_path\": \"${FILE_PATH}/private.key\"}
+    \"tls\": {\"enabled\": true, \"alpn\": [\"h3\"], \"certificate_provider\": \"acme\"}
   }")
 fi
 
@@ -175,12 +182,14 @@ IFS=','
 cat > "${FILE_PATH}/config.json" <<EOF
 {
   "log": { "disabled": true },
+  ${CERTIFICATE_PROVIDER_JSON}
   "inbounds": [
     ${INBOUNDS[*]}
   ],
   "outbounds": [{"type": "direct"}]
 }
 EOF
+chmod 600 "${FILE_PATH}/config.json"
 
 "$SINGBOX_BIN" run -c "${FILE_PATH}/config.json" >/dev/null 2>&1 &
 SINGBOX_PID=$!
@@ -191,8 +200,8 @@ ISP=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F'"' '{print
 
 # ================== 生成订阅 ==================
 > "${FILE_PATH}/list.txt"
-[ "$TUIC_PORT" != "" ] && [ "$TUIC_PORT" != "0" ] && echo "tuic://${UUID}:admin@${IP}:${TUIC_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#tuic_easyshare" >> "${FILE_PATH}/list.txt"
-[ "$HY2_PORT" != "" ] && [ "$HY2_PORT" != "0" ] && echo "hysteria2://${UUID}@${IP}:${HY2_PORT}/?sni=www.bing.com&insecure=1#hy2_easyshare" >> "${FILE_PATH}/list.txt"
+[ "$TUIC_PORT" != "" ] && [ "$TUIC_PORT" != "0" ] && echo "tuic://${UUID}:admin@${IP}:${TUIC_PORT}?sni=${CERT_DOMAIN}&alpn=h3&congestion_control=bbr#tuic_easyshare" >> "${FILE_PATH}/list.txt"
+[ "$HY2_PORT" != "" ] && [ "$HY2_PORT" != "0" ] && echo "hysteria2://${UUID}@${IP}:${HY2_PORT}/?sni=${CERT_DOMAIN}#hy2_easyshare" >> "${FILE_PATH}/list.txt"
 [ "$REALITY_PORT" != "" ] && [ "$REALITY_PORT" != "0" ] && echo "vless://${UUID}@${IP}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.nazhumi.com&fp=firefox&pbk=${public_key}&type=tcp#reality_easyshare" >> "${FILE_PATH}/list.txt"
 
 base64 "${FILE_PATH}/list.txt" | tr -d '\n' > "${FILE_PATH}/sub.txt"

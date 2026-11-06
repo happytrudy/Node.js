@@ -1,6 +1,6 @@
 ## 1. ✔ 最新xHTTP版Argo+TUIC方案：xHTTP抗封锁升级、H3(UDP)告别晚高峰龟速：
 
-* **xHTTP(h3)Argo隧道**：手动切换http2/quic、隧道连接数；Cloudflare CDN边缘节点可见。
+* **xHTTP(h3)Argo隧道**：固定使用QUIC隧道；Cloudflare CDN边缘节点可见。
                          xHTTP上下行h3标准UDP传输，突破封锁、晚高峰TCP拥塞
 
 * **极限精简与优化**：6级自适应匹配 + 主动内存回收机制。
@@ -55,10 +55,10 @@
 |1| **Freecloudpanel** | `64 MB` / `64 MB` / `100%` | 🔄 每 30 天手动续期 |🚫 缺货中，是否会再次开放未知 |🟡 逐步关闭中 |
 |2| **Zenix.sg** | `1 GB` / `5 GB` / `50%` | 🔄 维持账号活跃度 | ⏳ 目前正在队列等待中... |⏳ 漫长排队等待 |
 |3| **Bot Hosting** | `256 MB` / `1 GB` / `20%` | 🔄 已迁移至新面板，每4天续期 |❌不开放 7844 端口<br>❌不支持Argo<br>✅推荐TUIC |🟢 正常 |
-|4| **Pella.app** | `100 MB` / `5 GB` / `10%` | 🔄 每 24 小时手动续期 |❌不开放 TCP/UDP 端口<br>✅**推荐xHTTP版Argo隧道+H3模式， 隧道协议必须：http2** |🟡 遇停机restart即可|
+|4| **Pella.app** | `100 MB` / `5 GB` / `10%` | 🔄 每 24 小时手动续期 |❌不开放 TCP/UDP 端口<br>✅**推荐xHTTP版Argo隧道+H3模式，隧道协议固定：quic** |🟡 遇停机restart即可|
 |5| **Lunes Host** | `128 MB` / `512 MB` / `15%` | 🔄 每 15 天登录控制台=续期 |✅推荐xHTTP版Argo隧道+H3模式，隧道协议quic，备选TUIC|🟢 正常 |
 |6| **Katabump** | `308 MB` / `716 MB` / `25%` | 🔄 每 4 天手动续期 |✅推荐xHTTP版Argo隧道+H3模式，隧道协议quic，备选TUIC|🟢 正常 |
-|7| **host-ship** | `512 MB` / `1 GB` / `50%` | 🔄 手动续费，最长30天 |🟡疑似已对UDP封堵✅推荐xHTTP版Argo隧道+H3模式，隧道协议http2x4条连接|🟡 直连UDP封堵 |
+|7| **host-ship** | `512 MB` / `1 GB` / `50%` | 🔄 手动续费，最长30天 |🟡疑似已对UDP封堵✅推荐xHTTP版Argo隧道+H3模式，隧道协议固定：quic|🟡 直连UDP封堵 |
 |8| **botkeep.cloud** | `512 MB` / `512 MB` / `50%` | 🔄 测试中 |❌ 封代理|❌ 封代理 |
 
 

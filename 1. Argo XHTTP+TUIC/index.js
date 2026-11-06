@@ -2,7 +2,7 @@
 { const w = process.stderr.write; process.stderr.write = (chunk, ...args) => typeof chunk === 'string' && chunk.includes('DeprecationWarning') ? true : w.apply(process.stderr, [chunk, ...args]); }
 
 
-// ========= Sing-box TUIC + Argo Xray (xHTTP h2) 固定隧道 变量设置 =========
+// ========= Sing-box TUIC + Argo Xray (xHTTP H3) 固定隧道 变量设置 =========
 
 
 const TUIC_PORT = process.env.TUIC_PORT || "";                                        // TUIC 直连端口（留空=不部署）
@@ -13,9 +13,12 @@ const ARGO_DOMAIN = process.env.ARGO_DOMAIN || "";                              
 
 const ARGO_AUTH = process.env.ARGO_AUTH || "";                                        // 固定隧道 Token（必须与 PORT/DOMAIN 同时具备才部署）
 
-const ARGO_PROTOCOL = process.env.ARGO_PROTOCOL || "quic";                            // http2或quic（http2=稳定+低占用；quic=响应快+占用略高）
- 
-const ARGO_CONNECTIONS = process.env.ARGO_CONNECTIONS || "1";                         // 隧道连接数量 建议http2≤4，quic=1
+const CERT_DOMAIN = (process.env.CERT_DOMAIN || "").trim();                           // ACME 证书域名（必须托管在 Cloudflare）
+
+const CF_API_TOKEN = (process.env.CF_API_TOKEN || process.env.CF_DNS_API_TOKEN || "").trim(); // Cloudflare DNS 编辑 API Token
+
+const ACME_EMAIL = (process.env.ACME_EMAIL || "").trim();                              // ACME 账户邮箱（可选）
+
 
 const CFIP = process.env.CFIP || "www.teamviewer.com";                                // 优选域名（备选 www.visa.com.hk  usa.visa.com  www.wto.org  www.shopify.com ) 
 
@@ -94,6 +97,10 @@ const GO_BASE_ENV = {
 };
 
 if (!fs.existsSync(FILE_PATH)) fs.mkdirSync(FILE_PATH, { recursive: true });
+try {
+  fs.rmSync(path.join(FILE_PATH, "cert.pem"), { force: true });
+  fs.rmSync(path.join(FILE_PATH, "private.key"), { force: true });
+} catch (e) {}
 
 const uuidFilePath = path.join(FILE_PATH, "uuid.txt");
 const tuicPwdFilePath = path.join(FILE_PATH, "tuic_password.txt");
@@ -156,26 +163,17 @@ function getPublicIP() {
     .catch(() => "127.0.0.1");
 }
 
-function generateCertificates(keyPath, certPath) {
-  if (fs.existsSync(keyPath) && fs.existsSync(certPath)) return;
-  try {
-    execSync(`openssl ecparam -genkey -name prime256v1 -out "${keyPath}" 2>/dev/null && openssl req -new -x509 -days 3650 -key "${keyPath}" -out "${certPath}" -subj "/CN=bing.com" 2>/dev/null`);
-    fs.chmodSync(keyPath, 0o600);
-  } catch (e) {}
-}
-
 const singboxPath = path.join(FILE_PATH, "singbox");
 const webPath = path.join(FILE_PATH, "web");
 const botPath = path.join(FILE_PATH, "bot");
 
 const singboxConfigPath = path.join(FILE_PATH, "singbox_config.json");
 const xrayConfigPath = path.join(FILE_PATH, "xray_config.json");
-const certPath = path.join(FILE_PATH, "cert.pem");
-const keyPath = path.join(FILE_PATH, "private.key");
 
 const isArm = ["arm", "arm64", "aarch64"].includes(os.arch());
 const XRAY_VER = "25.1.30";
-const SINGBOX_VER = "1.11.4";
+const SINGBOX_VER = "1.14.4";
+const singboxVersionPath = path.join(FILE_PATH, "singbox.version");
 
 const singboxUrl = `https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/sing-box-${SINGBOX_VER}-linux-${isArm ? "arm64" : "amd64"}.tar.gz`;
 const xrayZipUrl = `https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-${isArm ? "arm64-v8a" : "64"}.zip`;
@@ -209,6 +207,9 @@ function downloadFile(urlStr, targetPath) {
 async function startSingBox() {
   if (isExiting) return;
   try {
+    if (!fs.existsSync(singboxVersionPath) || fs.readFileSync(singboxVersionPath, "utf8").trim() !== SINGBOX_VER) {
+      fs.rmSync(singboxPath, { force: true });
+    }
     if (!fs.existsSync(singboxPath)) {
       log("正在下载 Sing-box...");
       const tempTar = path.join(FILE_PATH, "singbox.tar.gz");
@@ -219,6 +220,7 @@ async function startSingBox() {
       try { fs.unlinkSync(tempTar); } catch (e) {}
     }
     fs.chmodSync(singboxPath, 0o775);
+    fs.writeFileSync(singboxVersionPath, SINGBOX_VER, { mode: 0o600 });
 
     singboxProc = spawn(singboxPath, ["run", "-c", singboxConfigPath], {
       env: Object.assign({}, GO_BASE_ENV, { GOMEMLIMIT: singboxMemLimit }),
@@ -351,7 +353,7 @@ async function startCloudflared(argoArgs) {
 
         if (!activeConnectionsMap.has(connId)) {
           activeConnectionsMap.set(connId, rawCode);
-          log(`[Cloudflare CDN] 已连接边缘节点：${rawCode}（${country}） | 协议：${ARGO_PROTOCOL.toLowerCase()}`);
+          log(`[Cloudflare CDN] 已连接边缘节点：${rawCode}（${country}） | 协议：quic`);
         }
       }
     };
@@ -397,10 +399,27 @@ async function main() {
   let globalLinks = [];
 
   if (enableDirect) {
-    generateCertificates(keyPath, certPath);
+    if (!CERT_DOMAIN || !CF_API_TOKEN) {
+      throw new Error("TUIC 需要配置 CERT_DOMAIN 和 CF_API_TOKEN（Cloudflare DNS API Token）");
+    }
+    const certificateDataPath = path.resolve(FILE_PATH, "certificates");
+    fs.mkdirSync(certificateDataPath, { recursive: true });
 
     const singboxConfig = {
       log: { level: "panic" },
+      certificate_providers: [{
+        type: "acme",
+        tag: "acme",
+        domain: [CERT_DOMAIN],
+        ...(ACME_EMAIL ? { email: ACME_EMAIL } : {}),
+        data_directory: certificateDataPath,
+        disable_http_challenge: true,
+        disable_tls_alpn_challenge: true,
+        dns01_challenge: {
+          provider: "cloudflare",
+          api_token: CF_API_TOKEN
+        }
+      }],
       dns: {
         servers: [
           {
@@ -424,8 +443,7 @@ async function main() {
           tls: {
             enabled: true,
             alpn: ["h3"],
-            certificate_path: certPath,
-            key_path: keyPath
+            certificate_provider: "acme"
           }
         }
       ],
@@ -436,12 +454,13 @@ async function main() {
       }
     };
 
-    fs.writeFileSync(singboxConfigPath, JSON.stringify(singboxConfig, null, 2));
+    fs.writeFileSync(singboxConfigPath, JSON.stringify(singboxConfig, null, 2), { mode: 0o600 });
+    fs.chmodSync(singboxConfigPath, 0o600);
     log(`[初始化] 已加载 Sing-box TUIC 直连入站，监听端口: ${DIRECT_PORT}`);
     await startSingBox();
 
     const publicIp = await getPublicIP();
-    const directTuic = `tuic://${UUID}:${TUIC_PASSWORD}@${publicIp}:${DIRECT_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#TUIC_easyshare`;
+    const directTuic = `tuic://${UUID}:${TUIC_PASSWORD}@${publicIp}:${DIRECT_PORT}?sni=${encodeURIComponent(CERT_DOMAIN)}&alpn=h3&congestion_control=bbr#TUIC_easyshare`;
     globalLinks.push(directTuic);
   } else {
     log("[初始化] 缺失变量 TUIC_PORT，已放弃部署 TUIC 直连。");
@@ -475,17 +494,15 @@ async function main() {
       "--no-autoupdate", 
       "--retries", "5", 
       "--grace-period", "1s", 
-      "--protocol", ARGO_PROTOCOL.toLowerCase(), 
-      "--ha-connections", ARGO_CONNECTIONS,
+      "--protocol", "quic",
+      "--ha-connections", "1",
       "run",
       "--token", authTrim
     ];
 
     await startCloudflared(argoArgs);
 
-    const argoLinkH2 = `vless://${UUID}@${CFIP}:${CFPORT}?encryption=none&security=tls&alpn=h2&sni=${domainTrim}&fp=chrome&type=xhttp&mode=auto&host=${domainTrim}&path=${encodeURIComponent(XHTTP_PATH)}#h2_argo_easyshare`;
 const argoLinkH3 = `vless://${UUID}@${CFIP}:${CFPORT}?encryption=none&security=tls&alpn=h3&sni=${domainTrim}&fp=chrome&type=xhttp&mode=auto&host=${domainTrim}&path=${encodeURIComponent(XHTTP_PATH)}#h3_argo_easyshare`;
-globalLinks.push(argoLinkH2);
 globalLinks.push(argoLinkH3);
   } else {
     log("[初始化] 缺失变量 (PORT/DOMAIN/AUTH)，已放弃部署 Argo 固定隧道。");
