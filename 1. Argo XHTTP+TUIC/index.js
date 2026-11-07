@@ -37,7 +37,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const readline = require("readline");
-const { spawn, execSync } = require("child_process");
+const { spawn, execSync, execFileSync } = require("child_process");
 
 const log = (msg) => process.stdout.write(msg + "\n");
 
@@ -222,17 +222,32 @@ async function startSingBox() {
     fs.chmodSync(singboxPath, 0o775);
     fs.writeFileSync(singboxVersionPath, SINGBOX_VER, { mode: 0o600 });
 
+    const singboxEnv = Object.assign({}, GO_BASE_ENV, { GOMEMLIMIT: singboxMemLimit });
+    try {
+      execFileSync(singboxPath, ["check", "-c", singboxConfigPath], {
+        env: singboxEnv,
+        stdio: ["ignore", "inherit", "inherit"]
+      });
+    } catch (err) {
+      log("[错误] Sing-box 配置校验失败，已停止自动重试；请修正上方具体错误后重启。");
+      return false;
+    }
+
     singboxProc = spawn(singboxPath, ["run", "-c", singboxConfigPath], {
-      env: Object.assign({}, GO_BASE_ENV, { GOMEMLIMIT: singboxMemLimit }),
-      stdio: ["ignore", "ignore", "pipe"],
+      env: singboxEnv,
+      stdio: ["ignore", "inherit", "inherit"],
       detached: true
     });
 
+    singboxProc.on("error", (err) => {
+      log(`[错误] Sing-box 进程启动失败: ${err.message}`);
+    });
     singboxProc.on("exit", (code) => {
       if (isExiting) return;
       log(`[警告] Sing-box 意外退出 (code: ${code})，3秒后自动拉起...`);
       setTimeout(() => { startSingBox().catch(e => log(`[保活错误] ${e.message}`)); }, 3000);
     });
+    return true;
 
   } catch (err) {
     log(`[错误] Sing-box 启动失败: ${err.message}，5秒后重试...`);
@@ -406,7 +421,7 @@ async function main() {
     fs.mkdirSync(certificateDataPath, { recursive: true });
 
     const singboxConfig = {
-      log: { level: "panic" },
+      log: { level: "warn" },
       certificate_providers: [{
         type: "acme",
         tag: "acme",
@@ -424,19 +439,17 @@ async function main() {
         servers: [
           {
             tag: "local-sys-dns",
-            address: "local",
-            detour: "direct"
+            type: "local"
           }
         ],
-        strategy: "prefer_ipv4",
-        independent_cache: true,
+        strategy: "ipv4_only",
         cache_capacity: 4096
       },
       inbounds: [
         {
           type: "tuic",
           tag: "tuic-in",
-          listen: "::",
+          listen: "0.0.0.0",
           listen_port: parseInt(DIRECT_PORT),
           users: [{ uuid: UUID, password: TUIC_PASSWORD }],
           congestion_control: "bbr",
@@ -457,7 +470,7 @@ async function main() {
     fs.writeFileSync(singboxConfigPath, JSON.stringify(singboxConfig, null, 2), { mode: 0o600 });
     fs.chmodSync(singboxConfigPath, 0o600);
     log(`[初始化] 已加载 Sing-box TUIC 直连入站，监听端口: ${DIRECT_PORT}`);
-    await startSingBox();
+    if ((await startSingBox()) === false) return;
 
     const publicIp = await getPublicIP();
     const directTuic = `tuic://${UUID}:${TUIC_PASSWORD}@${publicIp}:${DIRECT_PORT}?sni=${encodeURIComponent(CERT_DOMAIN)}&alpn=h3&congestion_control=bbr#TUIC_easyshare`;

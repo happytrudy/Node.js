@@ -140,7 +140,7 @@ INBOUNDS=()
 if [ -n "$TUIC_PORT" ] && [ "$TUIC_PORT" != "0" ]; then
   INBOUNDS+=("{
     \"type\": \"tuic\",
-    \"listen\": \"::\",
+    \"listen\": \"0.0.0.0\",
     \"listen_port\": $TUIC_PORT,
     \"users\": [{\"uuid\": \"$UUID\", \"password\": \"admin\"}],
     \"congestion_control\": \"bbr\",
@@ -151,7 +151,7 @@ fi
 if [ -n "$HY2_PORT" ] && [ "$HY2_PORT" != "0" ]; then
   INBOUNDS+=("{
     \"type\": \"hysteria2\",
-    \"listen\": \"::\",
+    \"listen\": \"0.0.0.0\",
     \"listen_port\": $HY2_PORT,
     \"users\": [{\"password\": \"$UUID\"}],
     \"masquerade\": \"https://bing.com\",
@@ -162,7 +162,7 @@ fi
 if [ -n "$REALITY_PORT" ] && [ "$REALITY_PORT" != "0" ]; then
   INBOUNDS+=("{
     \"type\": \"vless\",
-    \"listen\": \"::\",
+    \"listen\": \"0.0.0.0\",
     \"listen_port\": $REALITY_PORT,
     \"users\": [{\"uuid\": \"$UUID\", \"flow\": \"xtls-rprx-vision\"}],
     \"tls\": {
@@ -181,7 +181,11 @@ fi
 IFS=','
 cat > "${FILE_PATH}/config.json" <<EOF
 {
-  "log": { "disabled": true },
+  "log": { "level": "warn" },
+  "dns": {
+    "servers": [{"type": "local", "tag": "local-sys-dns"}],
+    "strategy": "ipv4_only"
+  },
   ${CERTIFICATE_PROVIDER_JSON}
   "inbounds": [
     ${INBOUNDS[*]}
@@ -191,7 +195,12 @@ cat > "${FILE_PATH}/config.json" <<EOF
 EOF
 chmod 600 "${FILE_PATH}/config.json"
 
-"$SINGBOX_BIN" run -c "${FILE_PATH}/config.json" >/dev/null 2>&1 &
+if ! "$SINGBOX_BIN" check -c "${FILE_PATH}/config.json"; then
+  echo "[错误] Sing-box 配置校验失败，请修正上方具体错误后重启。" >&2
+  exit 1
+fi
+
+"$SINGBOX_BIN" run -c "${FILE_PATH}/config.json" &
 SINGBOX_PID=$!
 echo "[SING-BOX] 启动完成 PID=$SINGBOX_PID"
 
@@ -228,7 +237,7 @@ schedule_restart() {
 
       rm -rf ~/.npm/_logs/* ./npm-debug.log* "${DATA_PATH}"/* /tmp/.singbox_* 2>/dev/null || true
 
-      "$SINGBOX_BIN" run -c "${FILE_PATH}/config.json" >/dev/null 2>&1 &
+      "$SINGBOX_BIN" run -c "${FILE_PATH}/config.json" &
       SINGBOX_PID=$!
 
       echo "[Sing-box重启完成] 新 PID: $SINGBOX_PID"

@@ -38,7 +38,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const readline = require("readline");
-const { spawn, execSync } = require("child_process");
+const { spawn, execSync, execFileSync } = require("child_process");
 
 const log = (msg) => process.stdout.write(msg + "\n");
 
@@ -158,12 +158,26 @@ async function startSingbox() {
     fs.chmodSync(webPath, 0o775);
     fs.writeFileSync(singboxVersionPath, SINGBOX_VER, { mode: 0o600 });
 
+    const singboxEnv = Object.assign({}, GO_BASE_ENV, { GOMEMLIMIT: SINGBOX_MEM_LIMIT });
+    try {
+      execFileSync(webPath, ["check", "-c", configPath], {
+        env: singboxEnv,
+        stdio: ["ignore", "inherit", "inherit"]
+      });
+    } catch (err) {
+      log("[错误] sing-box 配置校验失败，已停止自动重试；请修正上方具体错误后重启。");
+      return false;
+    }
+
     webProc = spawn(webPath, ["run", "-c", configPath], {
-      env: Object.assign({}, GO_BASE_ENV, { GOMEMLIMIT: SINGBOX_MEM_LIMIT }),
-      stdio: ["ignore", "ignore", "pipe"],
+      env: singboxEnv,
+      stdio: ["ignore", "inherit", "inherit"],
       detached: true
     });
 
+    webProc.on("error", (err) => {
+      log(`[错误] sing-box 进程启动失败: ${err.message}`);
+    });
     setTimeout(() => {
       if (fs.existsSync(webPath)) {
         try { 
@@ -180,6 +194,7 @@ async function startSingbox() {
         startSingbox().catch(e => log(`[保活错误] ${e.message}`));
       }, 3000);
     });
+    return true;
 
   } catch (err) {
     log(`[错误] sing-box 启动失败: ${err.message}，5秒后重试...`);
@@ -292,14 +307,14 @@ async function main() {
     const certificateDataPath = path.resolve(FILE_PATH, "certificates");
     fs.mkdirSync(certificateDataPath, { recursive: true });
     inbounds.push({
-      type: "tuic", tag: "tuic-in", listen: "::", listen_port: parseInt(TUIC_PORT),
+      type: "tuic", tag: "tuic-in", listen: "0.0.0.0", listen_port: parseInt(TUIC_PORT),
       users: [{ uuid: UUID, password: TUIC_PASSWORD }], congestion_control: "bbr",
       tls: { enabled: true, alpn: ["h3"], certificate_provider: "acme" }
     });
   }
 
   const config = {
-    log: { level: "panic" },
+    log: { level: "warn" },
     ...(enableTuic ? { certificate_providers: [{
       type: "acme",
       tag: "acme",
@@ -317,12 +332,10 @@ async function main() {
   servers: [
     {
       tag: "local-sys-dns",
-      address: "local", 
-      detour: "direct"
+      type: "local"
     }
   ],
-  strategy: "prefer_ipv4",
-  independent_cache: true,  
+  strategy: "ipv4_only",
   cache_capacity: 512  
     },
     inbounds: inbounds,
@@ -335,7 +348,7 @@ async function main() {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
   fs.chmodSync(configPath, 0o600);
 
-  await startSingbox();
+  if ((await startSingbox()) === false) return;
 
   let argoNodeLink = "";
   let tuicNodeLink = "";
