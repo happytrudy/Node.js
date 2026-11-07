@@ -9,6 +9,10 @@ const TUIC_PORT = process.env.TUIC_PORT || "";                                  
 
 const ARGO_PORT = process.env.ARGO_PORT || "8001";                                    // 固定隧道回源端口（与服务URL端口一致 http://127.0.0.1:8001）
 
+const ARGO_PROTOCOL = process.env.ARGO_PROTOCOL || "quic";                     // http2或quic（http2=稳定+低占用；quic=响应快+占用略高）
+
+const ARGO_CONNECTIONS = process.env.ARGO_CONNECTIONS || "1";                  // 隧道连接数量 建议http2≤4，quic=1 （多条UDP会增加占用，也可能会触发机房QoS）
+
 const ARGO_DOMAIN = process.env.ARGO_DOMAIN || "";                                    // 固定隧道域名（必须与 PORT/AUTH 同时具备才部署）
 
 const ARGO_AUTH = process.env.ARGO_AUTH || "";                                        // 固定隧道 Token（必须与 PORT/DOMAIN 同时具备才部署）
@@ -368,7 +372,7 @@ async function startCloudflared(argoArgs) {
 
         if (!activeConnectionsMap.has(connId)) {
           activeConnectionsMap.set(connId, rawCode);
-          log(`[Cloudflare CDN] 已连接边缘节点：${rawCode}（${country}） | 协议：quic`);
+          log(`[Cloudflare CDN] 已连接边缘节点：${rawCode}（${country}） | 协议：${ARGO_PROTOCOL.toLowerCase()}`);
         }
       }
     };
@@ -421,7 +425,7 @@ async function main() {
     fs.mkdirSync(certificateDataPath, { recursive: true });
 
     const singboxConfig = {
-      log: { level: "warn" },
+      log: { level: "panic" },
       certificate_providers: [{
         type: "acme",
         tag: "acme",
@@ -442,7 +446,7 @@ async function main() {
             type: "local"
           }
         ],
-        strategy: "ipv4_only",
+        strategy: "prefer_ipv4",
         cache_capacity: 4096
       },
       inbounds: [
@@ -507,8 +511,8 @@ async function main() {
       "--no-autoupdate", 
       "--retries", "5", 
       "--grace-period", "1s", 
-      "--protocol", "quic",
-      "--ha-connections", "1",
+      "--protocol", ARGO_PROTOCOL.toLowerCase(),
+      "--ha-connections", ARGO_CONNECTIONS,
       "run",
       "--token", authTrim
     ];

@@ -181,10 +181,10 @@ fi
 IFS=','
 cat > "${FILE_PATH}/config.json" <<EOF
 {
-  "log": { "level": "warn" },
+  "log": { "level": "panic" },
   "dns": {
     "servers": [{"type": "local", "tag": "local-sys-dns"}],
-    "strategy": "ipv4_only"
+    "strategy": "prefer_ipv4"
   },
   ${CERTIFICATE_PROVIDER_JSON}
   "inbounds": [

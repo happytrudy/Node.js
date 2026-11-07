@@ -314,7 +314,7 @@ async function main() {
   }
 
   const config = {
-    log: { level: "warn" },
+    log: { level: "panic" },
     ...(enableTuic ? { certificate_providers: [{
       type: "acme",
       tag: "acme",
@@ -335,7 +335,7 @@ async function main() {
       type: "local"
     }
   ],
-  strategy: "ipv4_only",
+  strategy: "prefer_ipv4",
   cache_capacity: 512  
     },
     inbounds: inbounds,

@@ -8,9 +8,9 @@ const TUIC_PORT = process.env.TUIC_PORT || "";                                  
 
 const ARGO_PORT = process.env.ARGO_PORT || "8001";                              // Argo回源端口填入8001 （留空=不部署：临时/固定隧道）
 
-const ARGO_PROTOCOL = process.env.ARGO_PROTOCOL || "quic";                      // http2或quic（http2=稳定+低占用；quic=响应快+占用略高）
+const ARGO_PROTOCOL = process.env.ARGO_PROTOCOL || "quic";                     // http2或quic（http2=稳定+低占用；quic=响应快+占用略高）
 
-const ARGO_CONNECTIONS = process.env.ARGO_CONNECTIONS || "1";                   // 隧道连接数量 建议http2≤4，quic=1 （多条UDP会增加占用，也可能会触发机房QoS）
+const ARGO_CONNECTIONS = process.env.ARGO_CONNECTIONS || "1";                  // 隧道连接数量 建议http2≤4，quic=1 （多条UDP会增加占用，也可能会触发机房QoS）
 
 const ARGO_DOMAIN = process.env.ARGO_DOMAIN || "";                              // 固定隧道域名
 
@@ -338,7 +338,7 @@ async function main() {
   }
 
   const config = {
-    log: { level: "warn" },
+    log: { level: "panic" },
     ...(enableTuic ? { certificate_providers: [{
       type: "acme",
       tag: "acme",
@@ -359,7 +359,7 @@ async function main() {
           type: "local"
         }
       ],
-      strategy: "ipv4_only",
+      strategy: "prefer_ipv4",
       cache_capacity: 4096   
     },
     inbounds: inbounds,
