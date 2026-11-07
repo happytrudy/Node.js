@@ -40,55 +40,41 @@ const os = require("os");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const readline = require("readline");
 const { spawn, execSync, execFileSync } = require("child_process");
 
 const log = (msg) => process.stdout.write(msg + "\n");
 
-const iataMap = {
-  HKG: "香港", TPE: "台湾", NRT: "日本", HND: "日本", KIX: "日本",
-  ICN: "韩国", SIN: "新加坡", BKK: "泰国", MNL: "菲律宾", SGN: "越南",
-  LAX: "美国", DFW: "美国", SJC: "美国", SEA: "美国", JFK: "美国", ORD: "美国",
-  LHR: "英国", FRA: "德国", CDG: "法国", AMS: "荷兰", HEL: "芬兰"
-};
-
 const totalMemMB = Math.round(os.totalmem() / 1024 / 1024);
-let singboxMemLimit, xrayMemLimit, cloudflaredMemLimit, dynamicGOGC, dynamicProcs;
+let singboxMemLimit, xrayMemLimit, dynamicGOGC, dynamicProcs;
 
 if (totalMemMB <= 160) {
-  singboxMemLimit = "20MiB";
+  singboxMemLimit = "65MiB";
   xrayMemLimit = "20MiB";
-  cloudflaredMemLimit = "45MiB";
   dynamicGOGC = "400"; 
   dynamicProcs = "1";
 } else if (totalMemMB < 256) {
-  singboxMemLimit = "40MiB";
+  singboxMemLimit = "130MiB";
   xrayMemLimit = "40MiB";
-  cloudflaredMemLimit = "90MiB";
   dynamicGOGC = "250";
   dynamicProcs = "1";
 } else if (totalMemMB < 352) {
-  singboxMemLimit = "65MiB";
+  singboxMemLimit = "195MiB";
   xrayMemLimit = "65MiB";
-  cloudflaredMemLimit = "130MiB";
   dynamicGOGC = "300";
   dynamicProcs = "1"; 
 } else if (totalMemMB < 448) {
-  singboxMemLimit = "65MiB";
+  singboxMemLimit = "205MiB";
   xrayMemLimit = "65MiB";
-  cloudflaredMemLimit = "140MiB";
   dynamicGOGC = "220";
   dynamicProcs = "1";
 } else if (totalMemMB < 576) {
-  singboxMemLimit = "80MiB";
+  singboxMemLimit = "240MiB";
   xrayMemLimit = "80MiB";
-  cloudflaredMemLimit = "160MiB";
   dynamicGOGC = "200";
   dynamicProcs = "1"; 
 } else {
-  singboxMemLimit = "200MiB";
+  singboxMemLimit = "550MiB";
   xrayMemLimit = "200MiB";
-  cloudflaredMemLimit = "350MiB";
   dynamicGOGC = "200";
   dynamicProcs = process.env.GOMAXPROCS || "2";
 }
@@ -104,6 +90,7 @@ if (!fs.existsSync(FILE_PATH)) fs.mkdirSync(FILE_PATH, { recursive: true });
 try {
   fs.rmSync(path.join(FILE_PATH, "cert.pem"), { force: true });
   fs.rmSync(path.join(FILE_PATH, "private.key"), { force: true });
+  fs.rmSync(path.join(FILE_PATH, "bot"), { force: true });
 } catch (e) {}
 
 const uuidFilePath = path.join(FILE_PATH, "uuid.txt");
@@ -169,7 +156,6 @@ function getPublicIP() {
 
 const singboxPath = path.join(FILE_PATH, "singbox");
 const webPath = path.join(FILE_PATH, "web");
-const botPath = path.join(FILE_PATH, "bot");
 
 const singboxConfigPath = path.join(FILE_PATH, "singbox_config.json");
 const xrayConfigPath = path.join(FILE_PATH, "xray_config.json");
@@ -181,11 +167,9 @@ const singboxVersionPath = path.join(FILE_PATH, "singbox.version");
 
 const singboxUrl = `https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/sing-box-${SINGBOX_VER}-linux-${isArm ? "arm64" : "amd64"}.tar.gz`;
 const xrayZipUrl = `https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-${isArm ? "arm64-v8a" : "64"}.zip`;
-const cloudflaredUrl = `https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${isArm ? "arm64" : "amd64"}`;
 
 let singboxProc = null;
 let webProc = null;
-let botProc = null;
 let isExiting = false;
 
 function downloadFile(urlStr, targetPath) {
@@ -323,73 +307,19 @@ except Exception as e:
   }
 }
 
-async function startCloudflared(argoArgs) {
-  if (isExiting) return;
-  try {
-    if (!fs.existsSync(botPath)) {
-      log("正在下载 Cloudflared...");
-      await downloadFile(cloudflaredUrl, botPath);
-    }
-    fs.chmodSync(botPath, 0o775);
-
-    log("[Argo] 检测到完整变量 (PORT+DOMAIN+AUTH)，启动固定隧道...");
-
-    botProc = spawn(botPath, [...argoArgs], {
-      env: Object.assign({}, GO_BASE_ENV, { GOMEMLIMIT: cloudflaredMemLimit }),
-      stdio: ["ignore", "pipe", "pipe"], detached: true
-    });
-
-    const activeConnectionsMap = new Map();
-    let rl = readline.createInterface({ input: botProc.stderr });
-
-    const detachStream = () => {
-      try {
-        if (rl) {
-          rl.removeListener("line", onLineHandler);
-          rl.close();
-          rl = null;
-        }
-        if (botProc && botProc.stderr) {
-          botProc.stderr.removeAllListeners("data");
-          botProc.stderr.resume(); 
-        }
-        activeConnectionsMap.clear();
-      } catch (e) {}
-    };
-
-    const onLineHandler = (chunk) => {
-      const cleanLine = chunk.replace(/\u001b\[[0-9;]*m/g, "");
-
-      const connMatch = cleanLine.match(/connIndex=(\d+)/i) || cleanLine.match(/"connIndex":(\d+)/i);
-      const locMatch = cleanLine.match(/(?:location|region)["=:\s]+([a-zA-Z0-9]{3,4})/i) ||
-                       cleanLine.match(/Registered tunnel connection.*?\b([A-Z0-9]{3,4})\b/i);
-
-      if (locMatch) {
-        const rawCode = locMatch[1].toUpperCase();
-        const iataCode = rawCode.replace(/[0-9]/g, "");
-        const country = iataMap[iataCode] || iataCode;
-        const connId = connMatch ? connMatch[1] : String(activeConnectionsMap.size);
-
-        if (!activeConnectionsMap.has(connId)) {
-          activeConnectionsMap.set(connId, rawCode);
-          log(`[Cloudflare CDN] 已连接边缘节点：${rawCode}（${country}） | 协议：${ARGO_PROTOCOL.toLowerCase()}`);
-        }
-      }
-    };
-
-    rl.on("line", onLineHandler);
-    setTimeout(detachStream, 60000);
-
-    botProc.on("exit", (code, signal) => {
-      if (isExiting) return;
-      log(`[警告] cloudflared 进程意外退出 (code: ${code}, signal: ${signal})，3秒后自动重连...`);
-      setTimeout(() => startCloudflared(argoArgs), 3000);
-    });
-
-  } catch (err) {
-    log(`[错误] cloudflared 启动失败: ${err.message}，5秒后重试...`);
-    if (!isExiting) setTimeout(() => startCloudflared(argoArgs), 5000);
+function createArgoInbound(token) {
+  const protocol = ARGO_PROTOCOL.trim().toLowerCase();
+  const connections = Number(ARGO_CONNECTIONS);
+  if (!["http2", "quic"].includes(protocol)) {
+    throw new Error("ARGO_PROTOCOL 必须是 http2 或 quic");
   }
+  if (!Number.isSafeInteger(connections) || connections < 1) {
+    throw new Error("ARGO_CONNECTIONS 必须是正整数");
+  }
+  return {
+    type: "cloudflared", tag: "argo-in", token,
+    protocol, ha_connections: connections, edge_ip_version: 4, grace_period: "1s"
+  };
 }
 
 async function main() {
@@ -411,22 +341,22 @@ async function main() {
     process.exit(0);
   }
 
-  try { execSync("pkill -9 -f sing-box || pkill -9 -f xray || pkill -9 -f cloudflared", { stdio: "ignore" }); } catch (e) {}
+  try { execSync("pkill -9 -f sing-box || pkill -9 -f xray", { stdio: "ignore" }); } catch (e) {}
 
   if (enableDirect) { try { execSync(`fuser -k -9 ${DIRECT_PORT}/udp`, { stdio: "ignore" }); } catch (e) {} }
 
   let globalLinks = [];
 
-  if (enableDirect) {
-    if (!CERT_DOMAIN || !CF_API_TOKEN) {
+  if (enableDirect || enableArgoFixed) {
+    if (enableDirect && (!CERT_DOMAIN || !CF_API_TOKEN)) {
       throw new Error("TUIC 需要配置 CERT_DOMAIN 和 CF_API_TOKEN（Cloudflare DNS API Token）");
     }
     const certificateDataPath = path.resolve(FILE_PATH, "certificates");
-    fs.mkdirSync(certificateDataPath, { recursive: true });
+    if (enableDirect) fs.mkdirSync(certificateDataPath, { recursive: true });
 
     const singboxConfig = {
       log: { level: "panic" },
-      certificate_providers: [{
+      ...(enableDirect ? { certificate_providers: [{
         type: "acme",
         tag: "acme",
         domain: [CERT_DOMAIN],
@@ -438,7 +368,7 @@ async function main() {
           provider: "cloudflare",
           api_token: CF_API_TOKEN
         }
-      }],
+      }] } : {}),
       dns: {
         servers: [
           {
@@ -450,7 +380,7 @@ async function main() {
         cache_capacity: 4096
       },
       inbounds: [
-        {
+        ...(enableDirect ? [{
           type: "tuic",
           tag: "tuic-in",
           listen: "0.0.0.0",
@@ -462,7 +392,8 @@ async function main() {
             alpn: ["h3"],
             certificate_provider: "acme"
           }
-        }
+        }] : []),
+        ...(enableArgoFixed ? [createArgoInbound(authTrim)] : [])
       ],
       outbounds: [{ type: "direct", tag: "direct", udp_fragment: true }],
       route: {
@@ -473,14 +404,14 @@ async function main() {
 
     fs.writeFileSync(singboxConfigPath, JSON.stringify(singboxConfig, null, 2), { mode: 0o600 });
     fs.chmodSync(singboxConfigPath, 0o600);
-    log(`[初始化] 已加载 Sing-box TUIC 直连入站，监听端口: ${DIRECT_PORT}`);
-    if ((await startSingBox()) === false) return;
-
-    const publicIp = await getPublicIP();
-    const directTuic = `tuic://${UUID}:${TUIC_PASSWORD}@${publicIp}:${DIRECT_PORT}?sni=${encodeURIComponent(CERT_DOMAIN)}&alpn=h3&congestion_control=bbr#TUIC_easyshare`;
-    globalLinks.push(directTuic);
-  } else {
-    log("[初始化] 缺失变量 TUIC_PORT，已放弃部署 TUIC 直连。");
+    if (enableDirect) {
+      log(`[初始化] 已加载 Sing-box TUIC 直连入站，监听端口: ${DIRECT_PORT}`);
+      const publicIp = await getPublicIP();
+      const directTuic = `tuic://${UUID}:${TUIC_PASSWORD}@${publicIp}:${DIRECT_PORT}?sni=${encodeURIComponent(CERT_DOMAIN)}&alpn=h3&congestion_control=bbr#TUIC_easyshare`;
+      globalLinks.push(directTuic);
+    } else {
+      log("[初始化] 缺失变量 TUIC_PORT，已放弃部署 TUIC 直连。");
+    }
   }
 
   if (enableArgoFixed) {
@@ -506,23 +437,18 @@ async function main() {
     log(`[初始化] 已加载 Xray Argo xHTTP 回源入站，监听端口: ${ARGO_PORT}`);
     await startXray();
 
-    const argoArgs = [
-      "tunnel", 
-      "--no-autoupdate", 
-      "--retries", "5", 
-      "--grace-period", "1s", 
-      "--protocol", ARGO_PROTOCOL.toLowerCase(),
-      "--ha-connections", ARGO_CONNECTIONS,
-      "run",
-      "--token", authTrim
-    ];
-
-    await startCloudflared(argoArgs);
+    log(`[Argo] 已配置 sing-box 内置固定隧道，协议: ${ARGO_PROTOCOL.toLowerCase()}，连接数: ${ARGO_CONNECTIONS}`);
 
 const argoLinkH3 = `vless://${UUID}@${CFIP}:${CFPORT}?encryption=none&security=tls&alpn=h3&sni=${domainTrim}&fp=chrome&type=xhttp&mode=auto&host=${domainTrim}&path=${encodeURIComponent(XHTTP_PATH)}#h3_argo_easyshare`;
 globalLinks.push(argoLinkH3);
   } else {
     log("[初始化] 缺失变量 (PORT/DOMAIN/AUTH)，已放弃部署 Argo 固定隧道。");
+  }
+
+  if ((await startSingBox()) === false) {
+    isExiting = true;
+    try { if (webProc) webProc.kill("SIGKILL"); } catch (e) {}
+    return;
   }
 
   if (globalLinks.length > 0) {
@@ -540,7 +466,6 @@ globalLinks.push(argoLinkH3);
     isExiting = true;
     try { if (singboxProc) singboxProc.kill("SIGKILL"); } catch (e) {}
     try { if (webProc) webProc.kill("SIGKILL"); } catch (e) {}
-    try { if (botProc) botProc.kill("SIGKILL"); } catch (e) {}
     process.exit(0);
   };
   process.on("SIGINT", cleanup);
