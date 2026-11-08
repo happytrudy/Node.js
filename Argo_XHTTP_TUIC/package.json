@@ -1,0 +1,16 @@
+{
+  "name": "argo-xhttp-tuic-shoes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Argo XHTTP and direct TUIC using shoes",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test config.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

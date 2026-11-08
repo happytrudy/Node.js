@@ -1,0 +1,5 @@
+.tmp/
+sub.txt
+node_modules/
+*.part
+shoes-x86_64-unknown-linux-musl
