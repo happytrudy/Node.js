@@ -110,7 +110,7 @@ function buildConfig(env, { filePath, uuid, tuicPassword } = {}) {
       challenge: { type: "dns01", provider: "cloudflare", api_token: cfToken },
     });
     config.push({
-      address: `0.0.0.0:${tuicPort}`, transport: "quic",
+      address: `[::]:${tuicPort}`, transport: "quic",
       quic_settings: { certificate_source: "tuic-acme" },
       protocol: { type: "tuic", uuid: clientUuid, password, zero_rtt_handshake: false },
       rules: ["allow-all-direct"],

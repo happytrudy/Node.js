@@ -25,6 +25,7 @@ test("emits shoes XHTTP and TUIC configuration with DNS-01 cert source", () => {
   assert.equal(result.config[0].challenge.provider, "cloudflare");
   assert.equal(result.config[0].challenge.api_token, "dummy-cloudflare-token");
   assert.equal(result.config[1].protocol.type, "tuic");
+  assert.equal(result.config[1].address, "[::]:4433");
   assert.equal(result.config[1].quic_settings.certificate_source, "tuic-acme");
   assert.equal(result.config[2].protocol.type, "xhttp");
   assert.equal(result.config[2].protocol.protocol.type, "vless");
