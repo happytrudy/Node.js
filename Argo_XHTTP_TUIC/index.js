@@ -26,8 +26,8 @@ const SHOES_BIN = path.join(ROOT, "shoes-x86_64-unknown-linux-musl");
 const CLOUDFLARED_BIN = path.join(DATA_DIR, "cloudflared");
 const CONFIG_PATH = path.join(DATA_DIR, "shoes.yaml");
 const URL_PATH = path.join(ROOT, "sub.txt");
-const UUID = "";
-const TUIC_PASSWORD = "";
+const UUID = ""; // 留空时由当前系统 hostname 稳定派生
+const TUIC_PASSWORD = ""; // 留空时由当前系统 hostname 稳定派生
 const XHTTP_PATH = "";
 const CFIP = "www.teamviewer.com";
 const CFPORT = "443";
@@ -111,7 +111,7 @@ function buildConfig(env, { filePath, uuid, tuicPassword } = {}) {
     });
     config.push({
       address: `[::]:${tuicPort}`, transport: "quic",
-      quic_settings: { certificate_source: "tuic-acme" },
+      quic_settings: { certificate_source: "tuic-acme", alpn_protocols: ["h3"] },
       protocol: { type: "tuic", uuid: clientUuid, password, zero_rtt_handshake: false },
       rules: ["allow-all-direct"],
     });
@@ -164,21 +164,21 @@ function writePrivate(file, contents) {
   if (process.platform !== "win32") fs.chmodSync(file, 0o600);
 }
 
-function readOrCreateSecret(file, envValue, create) {
-  const supplied = String(envValue || "").trim();
-  if (supplied) return supplied;
-  try {
-    const existing = fs.readFileSync(file, "utf8").trim();
-    if (existing) return existing;
-  } catch {}
-  const generated = create();
-  writePrivate(file, `${generated}\n`);
-  return generated;
+function genPassword(seed) {
+  return crypto.createHash("sha256").update(`${seed}-tuic`).digest("hex").slice(0, 32);
 }
 
-function getIdentity() {
-  const uuid = readOrCreateSecret(path.join(DATA_DIR, "uuid.txt"), UUID, () => crypto.randomUUID());
-  const password = readOrCreateSecret(path.join(DATA_DIR, "tuic_password.txt"), TUIC_PASSWORD, () => crypto.randomBytes(24).toString("base64url"));
+function genUuid(seed) {
+  const hash = crypto.createHash("md5").update(`${seed}-uuid`).digest("hex");
+  const variant = ((Number.parseInt(hash.slice(16, 18), 16) & 0x3f) | 0x80).toString(16);
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-${variant}${hash.slice(18, 20)}-${hash.slice(20, 32)}`;
+}
+
+function getIdentity(seed = os.hostname() || "fixed-seed") {
+  const uuid = String(UUID || genUuid(seed)).trim().toLowerCase();
+  const password = String(TUIC_PASSWORD || genPassword(seed)).trim();
+  if (!validUuid(uuid)) throw new Error("UUID must be a valid UUID v4");
+  if (!password || /[\r\n]/.test(password)) throw new Error("TUIC_PASSWORD must not be empty or contain newlines");
   return { uuid, password };
 }
 
@@ -295,7 +295,9 @@ function spawnShoes(configPath) {
     throw new Error("当前内置 shoes 是 x86_64-unknown-linux-musl 版本，只能在 Linux x86_64 运行");
   }
   log("启动内置 shoes ...");
-  shoesChild = spawn(SHOES_BIN, [configPath], { stdio: ["ignore", "inherit", "inherit"], env: process.env });
+  const shoesEnv = { ...process.env };
+  if (!shoesEnv.RUST_LOG) shoesEnv.RUST_LOG = "error,shoes::certificates=info";
+  shoesChild = spawn(SHOES_BIN, [configPath], { stdio: ["ignore", "inherit", "inherit"], env: shoesEnv });
   attachLogs(shoesChild, "shoes");
   shoesChild.on("exit", (code, signal) => {
     shoesChild = undefined;
@@ -439,6 +441,11 @@ async function main() {
   }
   const configText = `${JSON.stringify(settings.config, null, 2)}\n`;
   writePrivate(CONFIG_PATH, configText);
+  log(`[配置] 实际 shoes 配置文件：${CONFIG_PATH}`);
+  if (settings.enableTuic) {
+    const acme = settings.config.find((entry) => entry.type === "acme");
+    log(`[ACME] state_dir：${acme.state_dir}`);
+  }
   checkShoes(CONFIG_PATH);
 
   if (settings.enableArgo && !settings.argoToken) throw new Error("ARGO_AUTH must be a Cloudflare named-tunnel token");
@@ -492,7 +499,7 @@ function fetchAcmeTerms(directoryUrl) {
   });
 }
 
-module.exports = { buildConfig, parsePort, validUuid, fetchAcmeTerms, checkShoes };
+module.exports = { buildConfig, parsePort, validUuid, fetchAcmeTerms, checkShoes, getIdentity, genUuid, genPassword };
 
 if (require.main === module) {
   main().catch((error) => {

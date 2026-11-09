@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildConfig, parsePort, validUuid } = require("./index");
+const { buildConfig, parsePort, validUuid, getIdentity } = require("./index");
 
 const env = {
   TUIC_PORT: "4433",
@@ -68,4 +68,14 @@ test("rejects invalid ports, domains, and invalid tunnel protocol", () => {
 test("UUID validation rejects invalid values", () => {
   assert.equal(validUuid("550e8400-e29b-41d4-a716-446655440000"), true);
   assert.equal(validUuid("bad"), false);
+});
+
+test("identity is stable for the same machine hostname seed", () => {
+  const first = getIdentity("container-host-123");
+  const second = getIdentity("container-host-123");
+  const other = getIdentity("another-container");
+  assert.deepEqual(first, second);
+  assert.notEqual(first.uuid, other.uuid);
+  assert.notEqual(first.password, other.password);
+  assert.equal(validUuid(first.uuid), true);
 });
