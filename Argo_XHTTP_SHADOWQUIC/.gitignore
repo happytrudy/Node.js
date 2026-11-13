@@ -1,0 +1,5 @@
+.tmp/
+sub.txt
+node_modules/
+*.part
+shadowquic-client.json
